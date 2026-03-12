@@ -25,4 +25,7 @@ export const api = {
   updateCategory: (id, data) => request(`/categories/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteCategory: (id) => request(`/categories/${id}`, { method: 'DELETE' }),
   getStats: (month) => request(`/stats${month ? '?month=' + month : ''}`),
+  classifyDescription: (description) => request('/ai/classify', { method: 'POST', body: JSON.stringify({ description }) }),
+  retrainAI: () => request('/ai/retrain', { method: 'POST' }),
+  getAIInfo: () => request('/ai/info'),
 }

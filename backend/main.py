@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
+from pydantic import BaseModel
 
 from database import SessionLocal, engine, Base
 from models import Transaction, Category
@@ -13,10 +14,11 @@ from schemas import (
     CategoryUpdate,
     CategoryOut,
 )
+from ai_classifier import classifier
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="FinAgent API", version="2.0.0")
+app = FastAPI(title="FinAgent AI API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,14 +54,27 @@ def get_db():
         db.close()
 
 
+def _train_ai_from_db(db: Session):
+    """Lee categorías y transacciones de la BD y entrena la IA."""
+    cat_names = [c.name for c in db.query(Category).all()]
+    txs = db.query(Transaction).all()
+    user_data = [
+        (t.description, t.category) for t in txs if t.description and t.category
+    ]
+    classifier.train(cat_names, user_data)
+
+
 @app.on_event("startup")
-def seed_categories():
+def startup():
     db = SessionLocal()
     try:
+        # Seed categorías por defecto
         if db.query(Category).count() == 0:
             for cat in DEFAULT_CATEGORIES:
                 db.add(Category(**cat))
             db.commit()
+        # Entrenar IA con las categorías y transacciones existentes
+        _train_ai_from_db(db)
     finally:
         db.close()
 
@@ -78,6 +93,8 @@ def create_category(cat: CategoryCreate, db: Session = Depends(get_db)):
     db.add(obj)
     db.commit()
     db.refresh(obj)
+    # Re-entrenar IA con la nueva categoría
+    _train_ai_from_db(db)
     return obj
 
 
@@ -90,6 +107,8 @@ def update_category(cat_id: int, cat: CategoryUpdate, db: Session = Depends(get_
         setattr(obj, k, v)
     db.commit()
     db.refresh(obj)
+    # Re-entrenar IA por si cambió el nombre
+    _train_ai_from_db(db)
     return obj
 
 
@@ -100,6 +119,8 @@ def delete_category(cat_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
     db.delete(obj)
     db.commit()
+    # Re-entrenar IA sin la categoría eliminada
+    _train_ai_from_db(db)
     return {"ok": True}
 
 
@@ -127,6 +148,8 @@ def create_transaction(tx: TransactionCreate, db: Session = Depends(get_db)):
     db.add(obj)
     db.commit()
     db.refresh(obj)
+    # Re-entrenar IA con la nueva transacción (aprende del usuario)
+    _train_ai_from_db(db)
     return obj
 
 
@@ -193,4 +216,47 @@ def get_stats(month: str = None, db: Session = Depends(get_db)):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "FinAgent API v2"}
+    return {"status": "ok", "service": "FinAgent AI API v2"}
+
+
+# ── AI CLASSIFIER ────────────────────────────────────────────
+class ClassifyRequest(BaseModel):
+    description: str
+
+
+@app.post("/api/ai/classify")
+def classify_transaction(req: ClassifyRequest):
+    """Usa IA (NLP) para predecir la categoría basándose en la descripción."""
+    result = classifier.predict(req.description)
+    return result
+
+
+@app.post("/api/ai/retrain")
+def retrain_model(db: Session = Depends(get_db)):
+    """Re-entrena el modelo de IA manualmente."""
+    _train_ai_from_db(db)
+    return {
+        "ok": True,
+        "categories": classifier.categories,
+        "message": "Modelo re-entrenado con categorías y transacciones actuales",
+    }
+
+
+@app.get("/api/ai/info")
+def ai_info():
+    """Información sobre el modelo de IA."""
+    return {
+        "model": "TF-IDF + Multinomial Naive Bayes",
+        "library": "scikit-learn",
+        "type": "Clasificador de texto (NLP)",
+        "description": "Clasifica automáticamente transacciones financieras en categorías usando procesamiento de lenguaje natural. Se re-entrena dinámicamente al crear categorías o transacciones.",
+        "trained": classifier.is_trained,
+        "categories": classifier.categories,
+        "features": [
+            "Clasificación automática por descripción",
+            "Aprendizaje dinámico de nuevas categorías",
+            "Re-entrenamiento automático con cada transacción",
+            "Predicción con nivel de confianza",
+            "Top 3 categorías sugeridas",
+        ],
+    }

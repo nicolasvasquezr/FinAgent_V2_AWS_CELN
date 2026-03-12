@@ -766,7 +766,7 @@ El ALB detecta automáticamente la instancia caída mediante health checks y red
 
 ---
 
-## Autor
+## Autores
 
 **Nicolás Vásquez R. - Jorge Luis Fong Gutierrez**
 Universidad Autónoma de Occidente

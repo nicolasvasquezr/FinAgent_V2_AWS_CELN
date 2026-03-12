@@ -18,7 +18,7 @@ Aplicación web multi-contenedor para gestión de finanzas personales desplegada
 10. [Docker Hub](#docker-hub)
 11. [Pruebas de Alta Disponibilidad](#pruebas-de-alta-disponibilidad)
 12. [Aprendizajes y Conclusiones](#aprendizajes-y-conclusiones)
-13. [Autores](#autor)
+13. [Autores](#autores)
 
 ---
 

@@ -1,0 +1,23 @@
+services:
+
+  # ── Backend FastAPI (conecta a BD remota) ───────────────────
+  backend:
+    build: ./backend
+    container_name: finagent_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    ports:
+      - "8000:8000"
+
+  # ── Frontend React (Nginx) ──────────────────────────────────
+  frontend:
+    build: ./frontend
+    container_name: finagent_frontend
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - backend

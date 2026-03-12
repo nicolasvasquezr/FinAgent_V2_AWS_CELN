@@ -24,24 +24,28 @@ Aplicación web multi-contenedor para gestión de finanzas personales desplegada
 
 ## Descripción del Proyecto
 
-FinAgent v2 es una evolución del proyecto original FinAgent, que utilizaba la API de Google Gemini para leer facturas mediante IA. En esta versión se eliminó la dependencia de IA y se rediseñó completamente la aplicación para que el usuario pueda digitar manualmente sus gastos e ingresos, categorizarlos, y visualizar resúmenes y estadísticas.
+FinAgent v2 es una evolución del proyecto original FinAgent, que utilizaba la API de Google Gemini para leer facturas. En esta versión se reemplazó Gemini por un **clasificador de IA propio** basado en scikit-learn (TF-IDF + Naive Bayes) que clasifica automáticamente las transacciones en categorías usando procesamiento de lenguaje natural (NLP). El usuario digita sus gastos e ingresos, y la IA sugiere la categoría en tiempo real. El modelo se re-entrena dinámicamente con cada transacción y categoría nueva.
 
 ### ¿Qué cambió respecto a v1?
 
 | Aspecto | v1 (Original) | v2 (Actual) |
 |---------|---------------|-------------|
-| Entrada de datos | Subir foto de factura → Gemini la lee | Formulario manual de ingreso/gasto |
+| Entrada de datos | Subir foto de factura → Gemini la lee | Formulario manual + IA sugiere categoría |
+| IA | Google Gemini API (externa) | scikit-learn TF-IDF + Naive Bayes (local) |
 | Categorías | Fijas | Dinámicas (CRUD desde la app) |
 | Tipo de movimiento | Solo gastos | Gastos e ingresos (balance) |
 | Frontend | HTML estático (subir imagen) | React SPA con dashboard, historial, categorías |
-| Dependencias externas | Google Gemini API, httpx | Ninguna |
-| Backend | FastAPI + Gemini | FastAPI puro |
+| Dependencias externas | Google Gemini API, httpx | scikit-learn (corre localmente) |
+| Backend | FastAPI + Gemini | FastAPI + scikit-learn |
 
 ### Decisiones de diseño
 
+- **IA local con scikit-learn**: se eligió un modelo TF-IDF + Naive Bayes que corre dentro del contenedor, sin necesidad de API keys externas ni conexión a servicios de terceros.
+- **IA dinámica**: el modelo lee las categorías de la BD al arrancar y se re-entrena automáticamente al crear categorías o transacciones nuevas. Categorías nuevas del usuario se incorporan al modelo sin reiniciar.
 - **Categorías dinámicas**: el usuario puede crear, editar y eliminar categorías desde la app, en lugar de tener categorías fijas.
 - **React para el frontend**: se eligió React por mejor UX y dinamismo frente al HTML estático original.
 - **Gastos e ingresos**: se maneja balance completo, no solo gastos.
+- **BD compartida**: solo una instancia tiene PostgreSQL; la otra se conecta por IP privada.
 
 ---
 
@@ -53,6 +57,7 @@ FinAgent v2 es una evolución del proyecto original FinAgent, que utilizaba la A
 | Gráficos | Recharts | 2.x |
 | Fechas | date-fns | 3.x |
 | Backend | FastAPI + Uvicorn | FastAPI 0.104, Python 3.11 |
+| IA/NLP | scikit-learn (TF-IDF + Naive Bayes) | 1.5.0 |
 | ORM | SQLAlchemy | 2.x |
 | Validación | Pydantic | 2.x |
 | Base de datos | PostgreSQL | 15 (Alpine) |
@@ -88,12 +93,13 @@ FinAgent v2 es una evolución del proyecto original FinAgent, que utilizaba la A
               │   Application   │
               │  Load Balancer  │
               │  (alb-finagent) │
+              │ Subnets Públicas│
               └────────┬────────┘
                        │
          ┌─────────────┴─────────────┐
          │                           │
 ┌────────┴────────┐       ┌─────────┴────────┐
-│  Subnet Pública │       │  Subnet Pública  │
+│ Subnet Privada  │       │  Subnet Privada  │
 │   us-east-1a    │       │   us-east-1b     │
 │                 │       │                  │
 │ ┌─────────────┐ │       │ ┌──────────────┐ │
@@ -101,13 +107,15 @@ FinAgent v2 es una evolución del proyecto original FinAgent, que utilizaba la A
 │ │   -az-a     │ │       │ │   -az-b      │ │
 │ │  t2.micro   │ │       │ │  t2.micro    │ │
 │ │             │ │       │ │              │ │
-│ │ Frontend    │ │       │ │ Frontend     │ │
-│ │ Backend     │ │       │ │ Backend      │ │
-│ │ PostgreSQL  │ │       │ │ PostgreSQL   │ │
+│ │ Frontend    │ │  5432  │ │ Frontend     │ │
+│ │ Backend     │◄├───────┤►│ Backend      │ │
+│ │ PostgreSQL  │ │  (IP   │ │ (sin BD)     │ │
+│ │ (BD única)  │ │privada)│ │              │ │
 │ └─────────────┘ │       │ └──────────────┘ │
 └─────────────────┘       └──────────────────┘
 
 VPC: 10.0.0.0/16 (finagent-vpc)
+NAT Gateway: permite salida a internet desde subnets privadas
 ```
 
 ### Flujo de Red
@@ -126,22 +134,23 @@ VPC: 10.0.0.0/16 (finagent-vpc)
 ```
 finagent/
 ├── backend/
-│   ├── main.py              # API REST completa (categorías, transacciones, stats)
+│   ├── main.py              # API REST + endpoints IA
+│   ├── ai_classifier.py     # Clasificador NLP dinámico (scikit-learn)
 │   ├── models.py            # Modelos SQLAlchemy (Category, Transaction)
 │   ├── schemas.py           # Schemas Pydantic (validación entrada/salida)
 │   ├── database.py          # Configuración conexión PostgreSQL
-│   ├── requirements.txt     # Dependencias Python
+│   ├── requirements.txt     # Dependencias Python (incluye scikit-learn)
 │   └── Dockerfile           # Imagen backend (python:3.11-slim)
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx          # Layout principal con sidebar y navegación
 │   │   ├── main.jsx         # Entry point React
 │   │   ├── lib/
-│   │   │   ├── api.js       # Cliente HTTP centralizado (fetch wrapper)
+│   │   │   ├── api.js       # Cliente HTTP centralizado (incluye IA)
 │   │   │   └── utils.js     # Formateo COP, fechas, colores
 │   │   ├── components/
 │   │   │   ├── Modal.jsx    # Modal reutilizable
-│   │   │   └── TransactionForm.jsx  # Formulario de ingreso/gasto
+│   │   │   └── TransactionForm.jsx  # Formulario con sugerencia IA
 │   │   └── pages/
 │   │       ├── Dashboard.jsx   # KPIs + gráfico dona + barras históricas
 │   │       ├── Historial.jsx   # Tabla filtrable con editar/eliminar
@@ -152,7 +161,8 @@ finagent/
 │   └── Dockerfile           # Multi-stage: Node build → Nginx serve
 ├── nginx/
 │   └── nginx.conf           # Proxy reverso: / → React, /api → FastAPI
-├── docker-compose.yml       # Orquestación 3 contenedores
+├── docker-compose.yml       # Orquestación completa (frontend + backend + db)
+├── docker-compose.nodb.yml  # Para instancias sin BD (frontend + backend)
 ├── .env.example             # Variables de entorno template
 └── README.md
 ```
@@ -184,6 +194,32 @@ finagent/
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | GET | `/api/stats?month=YYYY-MM` | Resumen del mes: total gastos, ingresos, balance, conteo, gastos por categoría, histórico 6 meses |
+
+### IA (Inteligencia Artificial)
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| POST | `/api/ai/classify` | Clasificar descripción → devuelve categoría predicha, confianza, top 3 |
+| POST | `/api/ai/retrain` | Re-entrenar modelo manualmente con datos actuales |
+| GET | `/api/ai/info` | Información del modelo: tipo, categorías, features |
+
+**Ejemplo de uso:**
+```json
+// POST /api/ai/classify
+// Request:
+{"description": "Uber al trabajo"}
+
+// Response:
+{
+  "category": "Transporte",
+  "confidence": 98.2,
+  "all_predictions": [
+    {"category": "Transporte", "confidence": 98.2},
+    {"category": "Freelance", "confidence": 0.9},
+    {"category": "Hogar", "confidence": 0.1}
+  ]
+}
+```
 
 ---
 
@@ -235,7 +271,25 @@ Se reemplazó el `index.html` estático por una SPA completa en React:
 
 Se probó todo el sistema localmente con `docker compose up --build`. Se encontraron y corrigieron varios bugs (ver sección de Errores).
 
-### Fase 5 — Subida a GitHub
+### Fase 5 — Implementación de IA (Clasificador NLP)
+
+Se agregó inteligencia artificial al proyecto para cumplir con el requisito de "aplicación de IA":
+
+1. **ai_classifier.py**: Módulo de clasificación usando scikit-learn.
+   - Pipeline: TF-IDF (char_wb, ngrams 2-4) + Multinomial Naive Bayes
+   - Datos base: ~160 ejemplos en español para 15 categorías comunes
+   - Dinámico: lee categorías de la BD al arrancar, se re-entrena al crear categorías/transacciones
+   - Para categorías nuevas sin keywords, genera variantes automáticas ("pago X", "gasto X", "compra X")
+
+2. **main.py**: Nuevos endpoints `/api/ai/classify`, `/api/ai/retrain`, `/api/ai/info`. El modelo se re-entrena automáticamente al crear categorías o transacciones.
+
+3. **TransactionForm.jsx**: Cuando el usuario escribe la descripción de un gasto, después de 500ms se llama a la IA. Muestra un badge 🤖 con las 3 categorías sugeridas y su porcentaje de confianza. Si la confianza es >50%, auto-selecciona la categoría.
+
+4. **api.js**: Se agregó el método `classifyDescription()` al cliente HTTP.
+
+5. **requirements.txt**: Se agregó `scikit-learn==1.5.0`.
+
+### Fase 6 — Subida a GitHub
 
 ```bash
 git init
@@ -450,11 +504,11 @@ En VPC → Security Groups → Create security group. Se crearon 3:
 
 ### Paso 4 — Lanzar instancias EC2
 
-Se lanzaron 2 instancias t2.micro con Amazon Linux 2023.
+Se lanzaron 2 instancias t2.micro con Amazon Linux 2023 en **subredes privadas**.
 
-> **Lección aprendida**: Inicialmente se desplegaron en subredes **privadas**, pero no fue posible conectarse (ni por EC2 Instance Connect Endpoint ni por SSM). Se terminaron y relanzaron en subredes **públicas**.
+> **Lección aprendida**: Inicialmente se intentó en subredes públicas para facilitar el debugging. Después se migraron a subredes privadas como exige la consigna. La conexión SSH se hace mediante un bastion host temporal en subnet pública.
 
-**finagent-ec2-az-a:**
+**finagent-ec2-az-a** (lleva la base de datos):
 
 | Campo | Valor |
 |-------|-------|
@@ -463,24 +517,11 @@ Se lanzaron 2 instancias t2.micro con Amazon Linux 2023.
 | Instance type | t2.micro |
 | Key pair | Proceed without a key pair |
 | VPC | finagent-vpc |
-| Subnet | finagent-subnet-public1-us-east-1a |
-| Auto-assign public IP | Enable |
+| Subnet | finagent-subnet-private1-us-east-1a |
+| Auto-assign public IP | Disable |
 | Security group | 2sg-ec2-finagent |
 
-**finagent-ec2-az-b:**
-
-| Campo | Valor |
-|-------|-------|
-| Name | finagent-ec2-az-b |
-| AMI | Amazon Linux 2023 |
-| Instance type | t2.micro |
-| Key pair | Proceed without a key pair |
-| VPC | finagent-vpc |
-| Subnet | finagent-subnet-public2-us-east-1b |
-| Auto-assign public IP | Enable |
-| Security group | 2sg-ec2-finagent |
-
-**User Data** (script de arranque automático, pegado en Advanced details → User data):
+**User Data AZ-a** (levanta frontend + backend + PostgreSQL):
 
 ```bash
 #!/bin/bash
@@ -490,60 +531,73 @@ systemctl enable docker
 systemctl start docker
 curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
-# Instalar buildx (necesario para docker compose build en Amazon Linux 2023)
 mkdir -p /usr/local/lib/docker/cli-plugins
 curl -SL https://github.com/docker/buildx/releases/download/v0.21.1/buildx-v0.21.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx
 chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
-# Crear usuario sin root para ejecutar Docker
 useradd -m -s /bin/bash appuser
 usermod -aG docker appuser
-# Clonar proyecto desde GitHub
 su - appuser -c "git clone https://github.com/nicolasvasquezr/FinAgent_V2_AWS_CELN.git /home/appuser/finagent"
-# Crear archivo de entorno
 cat > /home/appuser/finagent/.env << 'EOF'
 POSTGRES_DB=finagent
 POSTGRES_USER=finagent
 POSTGRES_PASSWORD=finagent2024
 EOF
 chown appuser:appuser /home/appuser/finagent/.env
-# Levantar aplicación con Docker Compose
 su - appuser -c "cd /home/appuser/finagent && docker-compose up -d"
 ```
 
-> **Nota importante**: El User Data original no incluía la instalación de buildx, lo que causó que el build fallara en ambas instancias. Se tuvo que instalar manualmente conectándose por SSH. El script de arriba ya incluye la corrección.
+**finagent-ec2-az-b** (sin BD, se conecta a AZ-a por IP privada):
+
+| Campo | Valor |
+|-------|-------|
+| Name | finagent-ec2-az-b |
+| AMI | Amazon Linux 2023 |
+| Instance type | t2.micro |
+| Key pair | Proceed without a key pair |
+| VPC | finagent-vpc |
+| Subnet | finagent-subnet-private2-us-east-1b |
+| Auto-assign public IP | Disable |
+| Security group | 2sg-ec2-finagent |
+
+**User Data AZ-b** (usa `docker-compose.nodb.yml`, apunta a la BD de AZ-a):
+
+```bash
+#!/bin/bash
+yum update -y
+yum install -y docker git
+systemctl enable docker
+systemctl start docker
+curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -SL https://github.com/docker/buildx/releases/download/v0.21.1/buildx-v0.21.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx
+chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+useradd -m -s /bin/bash appuser
+usermod -aG docker appuser
+su - appuser -c "git clone https://github.com/nicolasvasquezr/FinAgent_V2_AWS_CELN.git /home/appuser/finagent"
+cat > /home/appuser/finagent/.env << 'EOF'
+POSTGRES_DB=finagent
+POSTGRES_USER=finagent
+POSTGRES_PASSWORD=finagent2024
+DATABASE_URL=postgresql://finagent:finagent2024@10.0.132.57:5432/finagent
+EOF
+chown appuser:appuser /home/appuser/finagent/.env
+su - appuser -c "cd /home/appuser/finagent && docker-compose -f docker-compose.nodb.yml up -d"
+```
+
+> **Nota**: `10.0.132.57` es la IP privada de AZ-a. AZ-b usa `docker-compose.nodb.yml` que solo levanta frontend y backend (sin PostgreSQL), y el backend se conecta a la BD de AZ-a por la red privada de la VPC.
 
 ### Paso 5 — Verificar que la app corre en las instancias
 
-Conectarse a cada instancia: EC2 → Instances → seleccionar instancia → Connect → EC2 Instance Connect → **Connect using a Public IP** → Connect.
+Como las instancias están en subredes privadas, no se puede conectar directamente. Se usó un **bastion host temporal** (instancia en subnet pública) para verificar:
 
 ```bash
-sudo su - appuser
-cd finagent
-docker-compose ps
+# Desde el bastion host:
+curl -s http://10.0.132.57/api/categories | head -50    # AZ-a
+curl -s http://10.0.149.32/api/categories | head -50    # AZ-b
 ```
 
-Resultado esperado:
-```
-NAME                IMAGE                COMMAND                  SERVICE    STATUS
-finagent_backend    finagent-backend     "uvicorn main:app --…"   backend    Up
-finagent_db         postgres:15-alpine   "docker-entrypoint.s…"   db         Up (healthy)
-finagent_frontend   finagent-frontend    "/docker-entrypoint.…"   frontend   Up
-```
-
-Si los contenedores no están corriendo (User Data falló), levantarlos manualmente:
-```bash
-# Si buildx no está instalado:
-exit  # volver a ec2-user
-sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo curl -SL https://github.com/docker/buildx/releases/download/v0.21.1/buildx-v0.21.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx
-sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
-sudo systemctl restart docker
-
-# Volver a appuser y levantar
-sudo su - appuser
-cd finagent
-docker-compose up --build -d
-```
+Ambas instancias devolvieron las mismas categorías con el mismo `created_at`, confirmando que AZ-b se conecta correctamente a la BD de AZ-a.
 
 ### Paso 6 — Crear Target Group
 
@@ -676,6 +730,13 @@ El ALB detecta automáticamente la instancia caída mediante health checks y red
 - **Nginx como proxy reverso unifica la URL**: el usuario accede a una sola URL y Nginx decide si servir archivos estáticos (React) o hacer proxy al backend (FastAPI).
 - **Las claves de diccionarios deben coincidir exactamente**: un error tan simple como `"ingreso"` vs `"ingresos"` puede causar un KeyError difícil de detectar sin logs.
 
+### Sobre la IA
+
+- **scikit-learn es suficiente para clasificación simple**: no se necesita un modelo pesado de deep learning para clasificar texto corto. TF-IDF + Naive Bayes funciona muy bien para descripciones de gastos.
+- **char_wb ngrams capturan variantes**: usar n-gramas de caracteres en vez de palabras permite que el modelo reconozca variantes como "uber", "Uber", "uber al trabajo" sin preprocesamiento complejo.
+- **Re-entrenamiento dinámico**: entrenar el modelo cada vez que se crea una transacción o categoría permite que mejore con el uso. El entrenamiento es instantáneo porque el dataset es pequeño.
+- **Categorías nuevas sin datos históricos**: para categorías que el usuario crea sin ejemplos previos, se generan variantes automáticas ("pago X", "gasto X", "compra X") como semilla mínima.
+
 ### Sobre el Proceso Colaborativo
 
 - **Iterar rápido y corregir sobre la marcha**: es más eficiente desplegar, probar y arreglar bugs que intentar que todo sea perfecto desde el inicio.
@@ -689,20 +750,19 @@ El ALB detecta automáticamente la instancia caída mediante health checks y red
 | Recurso | Nombre | Detalle |
 |---------|--------|---------|
 | VPC | finagent-vpc | 10.0.0.0/16 |
-| Subnet pública 1a | finagent-subnet-public1-us-east-1a | us-east-1a |
-| Subnet pública 1b | finagent-subnet-public2-us-east-1b | us-east-1b |
-| Subnet privada 1a | finagent-subnet-private1-us-east-1a | us-east-1a |
-| Subnet privada 1b | finagent-subnet-private2-us-east-1b | us-east-1b |
+| Subnet pública 1a | finagent-subnet-public1-us-east-1a | us-east-1a (ALB) |
+| Subnet pública 1b | finagent-subnet-public2-us-east-1b | us-east-1b (ALB) |
+| Subnet privada 1a | finagent-subnet-private1-us-east-1a | us-east-1a (EC2 az-a) |
+| Subnet privada 1b | finagent-subnet-private2-us-east-1b | us-east-1b (EC2 az-b) |
 | Internet Gateway | finagent-igw | Asociado a VPC |
-| NAT Gateway | finagent-nat | En 1 AZ |
-| EC2 AZ-a | finagent-ec2-az-a | t2.micro, Amazon Linux 2023 |
-| EC2 AZ-b | finagent-ec2-az-b | t2.micro, Amazon Linux 2023 |
-| ALB | alb-finagent | Internet-facing, HTTP:80 |
+| NAT Gateway | finagent-nat | En 1 AZ (salida a internet para subnets privadas) |
+| EC2 AZ-a | finagent-ec2-az-a | t2.micro, subnet privada, frontend + backend + PostgreSQL |
+| EC2 AZ-b | finagent-ec2-az-b | t2.micro, subnet privada, frontend + backend (BD en AZ-a) |
+| ALB | alb-finagent | Internet-facing, subnets públicas, HTTP:80 |
 | Target Group | tg-finagent | HTTP:80, health check: / |
 | SG ALB | 1sg-alb-finagent | HTTP 80 desde 0.0.0.0/0 |
-| SG EC2 | 2sg-ec2-finagent | HTTP 80 desde ALB + SSH 22 |
+| SG EC2 | 2sg-ec2-finagent | HTTP 80 desde ALB + SSH 22 + TCP 5432 entre EC2s |
 | SG DB | 3sg-db-finagent | TCP 5432 desde EC2 |
-| EICE | finagent-eice | EC2 Instance Connect Endpoint |
 
 ---
 
